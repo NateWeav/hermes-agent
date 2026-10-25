@@ -71,6 +71,11 @@ def _settings(policy, config, live, picked):
         config['agent'] = agent
     if 'max_turns' not in request:
         _follow(config, live, 'max_turns')
+    # These execution limits have no session-level picker. Refresh them only at
+    # the idle resume boundary, never by rewriting an admitted turn's policy or
+    # cached system prompt. Otherwise an old session keeps a withdrawn limit.
+    for key in ('compression', 'tool_output', 'file_read_max_chars'):
+        _follow(config, live, key)
     _follow(config, live, 'checkpoints')
     if request.get('checkpoints') is True:
         section = config.get('checkpoints')
