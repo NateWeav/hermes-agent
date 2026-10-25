@@ -4698,6 +4698,110 @@
         "title": "A2aForwardResult",
         "type": "object"
       },
+      "ACPNotification": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "text"
+        ],
+        "title": "ACPNotification",
+        "type": "object"
+      },
+      "ACPNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "action": {
+            "default": "take",
+            "enum": [
+              "take",
+              "ack",
+              "release"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Identity"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ACPNotificationParams",
+        "type": "object"
+      },
+      "ACPNotificationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "notification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ACPNotification"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Identity"
+          }
+        },
+        "required": [
+          "notification"
+        ],
+        "title": "ACPNotificationResult",
+        "type": "object"
+      },
       "AccountOwner": {
         "additionalProperties": false,
         "properties": {
@@ -48005,6 +48109,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.acp_notification",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ACPNotificationParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ACPNotificationResult"
         }
       }
     },

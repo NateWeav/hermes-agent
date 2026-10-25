@@ -194,6 +194,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 self._snapshots.pop(session_id, None)
                 continue
             await self._adopt(session_id, snapshot)
+            from acp_adapter.gateway_notifications import drain
+            await drain(self, session_id, gateway)
             # Before this session's cards are offered again: until ``_client`` returns, ``self._gateway`` is
             # not this connection, so a card answered while the request is out would lose its answer.
             await self._request_live_reasoning(gateway, session_id)
@@ -320,6 +322,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp_adapter.gateway_session_meta import available_commands_update
         await asyncio.sleep(0)  # after the session reply: the editor routes updates by a known id
         try:
+            from acp_adapter.gateway_notifications import drain
+            await drain(self, session_id)
             await self._conn.session_update(session_id=editor_id, update=available_commands_update())
             await self._project_usage(session_id, editor_id,
                                       await (await self._client()).rpc("session.stats", session_id=session_id))
@@ -948,6 +952,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 snapshot.update(replay_epoch=epoch, last_sequence=seq,
                     execution_generation=event.get("execution_generation", snapshot.get("execution_generation")))
                 await self._project(event)
+                if event.get('type') == 'message.complete':
+                    from acp_adapter.gateway_notifications import drain
+                    await drain(self, sid, gateway)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -962,6 +969,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
+        if kind == 'status.update' and payload.get('kind') == 'acp_notification':
+            from acp_adapter.gateway_notifications import drain
+            await drain(self, sid)
+            return
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload, event)
             return

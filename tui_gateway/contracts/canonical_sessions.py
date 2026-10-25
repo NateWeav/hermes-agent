@@ -319,6 +319,25 @@ class CanonicalEventsResult(Result):
     open_requests: list[OpenRequestEntry] | None = None
 
 
+class ACPNotificationParams(CanonicalSessionParams):
+    action: Literal['take', 'ack', 'release'] = 'take'
+    identity: str | None = None
+
+
+class ACPNotification(Result):
+    kind: str
+    title: str
+    text: str
+
+
+class ACPNotificationResult(Result):
+    notification: ACPNotification | None
+    identity: str | None = None
+
+
+canonical_method('session.acp_notification', params=ACPNotificationParams, result=ACPNotificationResult)
+
+
 for _name, _params, _result in (
     ('session.create', CanonicalCreateParams, CanonicalSnapshot),
     ('session.resume', CanonicalResumeParams, CanonicalSnapshot),

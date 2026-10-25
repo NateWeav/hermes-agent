@@ -4944,6 +4944,21 @@ export interface GroupsDiscardResult {
   discarded?: boolean
   task: RoomTaskReceipt
 }
+export interface ACPNotificationParams {
+  profile?: string | null
+  session_id: string
+  action?: 'take' | 'ack' | 'release'
+  identity?: string | null
+}
+export interface ACPNotificationResult {
+  notification: ACPNotification | null
+  identity?: string | null
+}
+export interface ACPNotification {
+  kind: string
+  title: string
+  text: string
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -6837,6 +6852,7 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  'session.acp_notification': { params: ACPNotificationParams; result: ACPNotificationResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -6899,6 +6915,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
+  'session.acp_notification',
   'session.automation',
   'session.create',
   'session.detach',
