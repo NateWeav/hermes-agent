@@ -1378,17 +1378,20 @@ def _consume_ephemeral_max_output(agent):
 def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides):
     ctx_len = getattr(agent, "context_compressor", None)
     ephemeral_out = _consume_ephemeral_max_output(agent)
+    extra_body = dict(request_overrides.get("extra_body") or {})
+    # Resolve before thinking budgets/context clamps; SDK extra_body would otherwise override recovery.
+    max_tokens = extra_body.pop("max_tokens", agent.max_tokens)
     anthropic_kwargs = agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_anthropic_messages_for_api(api_messages), tools=tools_for_api,
-        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
+        max_tokens=ephemeral_out if ephemeral_out is not None else max_tokens,
         reasoning_config=reasoning_config, is_oauth=agent._is_anthropic_oauth,
         preserve_dots=agent._anthropic_preserve_dots(),
         context_length=ctx_len.context_length if ctx_len else None,
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
-    # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
-    # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
+    if extra_body:
+        anthropic_kwargs.setdefault("extra_body", {}).update(extra_body)
     return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs, api_messages)
 
 
@@ -2240,11 +2243,8 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
 
 def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
-        ant_kw = agent._get_transport().build_kwargs(
-            model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
-            reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
-            preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
-        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw, api_messages)
+        ant_kw = _build_anthropic_kwargs(
+            agent, api_messages, None, agent.reasoning_config, effective_request_overrides(agent))
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
