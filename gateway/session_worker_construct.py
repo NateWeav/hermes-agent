@@ -229,11 +229,20 @@ def routing_agent_kwargs(config, model, provider, base_url):
     tier's request overrides), from a managed worker's frozen session config."""
     from agent.fast_mode import STATIC_TIERS, parse_service_tier
     from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
     pr = config.get('provider_routing') or {}
     score = (config.get('openrouter') or {}).get('min_coding_score')
     tier = parse_service_tier((config.get('agent') or {}).get('service_tier', ''))
-    overrides = resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier) if tier in STATIC_TIERS else None
-    return {'providers_allowed': pr.get('only'), 'providers_ignored': pr.get('ignore'), 'providers_order': pr.get('order'),
+    overrides = (dict(resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier) or {})
+                 if tier in STATIC_TIERS else {})
+    entry = _get_named_custom_provider(provider or '', config=config) or {}
+    # A worker receives explicit credentials, so AIAgent cannot infer the named entry's dialect.
+    same_endpoint = not base_url or str(base_url).rstrip('/') == str(entry.get('base_url') or '').rstrip('/')
+    if same_endpoint and isinstance(entry.get('extra_body'), dict):
+        overrides['extra_body'] = {**entry['extra_body'], **overrides.get('extra_body', {})}
+    api_mode = (entry.get('api_mode') if same_endpoint else None) or (config.get('model') or {}).get('api_mode')
+    return {'api_mode': api_mode,
+            'providers_allowed': pr.get('only'), 'providers_ignored': pr.get('ignore'), 'providers_order': pr.get('order'),
             'provider_sort': pr.get('sort'), 'provider_require_parameters': pr.get('require_parameters', False),
             'provider_data_collection': pr.get('data_collection'), 'service_tier': tier, 'request_overrides': overrides,
             'openrouter_min_coding_score': score if isinstance(score, (int, float)) and 0 <= score <= 1 else None}

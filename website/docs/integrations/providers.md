@@ -1424,7 +1424,7 @@ Older configs used a top-level `custom_providers:` list instead. It still works 
 
 **Reasoning effort on custom endpoints.** The configured `reasoning_effort` (`/reasoning max`, `agent.reasoning_effort`) reaches a custom endpoint unchanged on both the `chat_completions` and the `codex_responses` transport — up to `max`; only the Hermes-internal `ultra` is clamped to `max`. Two exceptions follow the host rather than the entry: a custom entry pointed at `api.openai.com` keeps OpenAI's per-model ladder (`max` is a gpt-5.6-only level there), and an entry pointed at a provider whose profile publishes a per-model vocabulary (Ramp Router) is clamped to that catalog. An endpoint that rejects the level answers with an HTTP 400 instead of Hermes silently downgrading it. When no effort is configured at all, `chat_completions` requests carry `reasoning_effort: medium` — the same default the Nous Portal and OpenRouter routes apply — rather than leaving the endpoint's own default in charge (kimi-k3's is `max`, about 3x the reasoning tokens of `medium`); models marked `supports_reasoning: false` in the catalog or `model_overrides`, and Ollama models without the `thinking` capability, keep the field off.
 
-Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
+Some compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into requests for that endpoint, including native `anthropic_messages` requests:
 
 ```yaml
 providers:
@@ -1453,6 +1453,21 @@ extra_body:
 ```
 
 The configured `extra_body` follows the provider everywhere: it is merged at agent construction, **survives every gateway turn** (including turns where `/fast` layers `service_tier`/`speed` overrides on top — those merge over your `extra_body` rather than replacing it), and is **re-derived on `/model` switches** — switching to a named custom provider applies its `extra_body`, and switching away clears it so it never leaks to another provider.
+
+For an Anthropic-compatible proxy requiring an explicit request budget, use the provider's raw-body override rather than the removed global `model.max_tokens` setting:
+
+```yaml
+providers:
+  claude-proxy:
+    api: http://localhost:8317
+    transport: anthropic_messages
+    extra_body:
+      max_tokens: 16384
+```
+
+This budget applies only to the selected provider. Native Messages requires `max_tokens`; Hermes resolves this override before computing thinking budgets and context-window clamps. A one-request recovery budget takes precedence without changing the configured value. Other body fields retain the SDK's `extra_body` merge behavior. Providers without an explicit override keep their existing behavior; no cap is added to GPT/chat-completions requests.
+
+Gateway-backed editor sessions freeze their provider configuration. Restarting alone does not update an existing session's frozen provider entry: explicitly select the named provider again to adopt its current transport and `extra_body`, or start a fresh session. Unrelated frozen settings are not refreshed by a model pick.
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 

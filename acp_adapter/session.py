@@ -353,6 +353,9 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        requested = getattr(state.agent, "requested_provider", None)
+        if isinstance(requested, str) and requested.startswith("custom:"):
+            session_meta["provider"] = requested
 
         try:
             if db.get_session(state.session_id) is None:
@@ -502,7 +505,7 @@ class SessionManager:
 
         from run_agent import AIAgent
         from agent.skill_utils import parse_config_string_list
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config, resolve_turn_limit
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
         from hermes_constants import resolve_reasoning_config
@@ -529,6 +532,8 @@ class SessionManager:
             "disabled_toolsets": (list(disabled_toolsets) if disabled_toolsets is not None
                                   else parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None),
             "model": model or default_model,
+            "max_iterations": resolve_turn_limit((config.get("agent") or {}).get("max_turns")),
+            "requested_provider": requested_provider or config_provider,
             "cwd": cwd,
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
@@ -539,8 +544,12 @@ class SessionManager:
         try:
             runtime = resolve_runtime_provider(
                 requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            # Saved transport metadata is a fallback, not a pin over a named provider's current config.
+            named_route = str(requested_provider or config_provider or "").startswith("custom:") and (
+                not base_url or base_url.rstrip("/") == str(runtime.get("base_url") or "").rstrip("/"))
             kwargs.update({
-                "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
+                "provider": runtime.get("provider"),
+                "api_mode": (runtime.get("api_mode") if named_route else api_mode) or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
