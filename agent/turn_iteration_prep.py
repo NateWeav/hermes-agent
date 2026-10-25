@@ -547,9 +547,10 @@ def apply_retry_restarts(
 
     if _retry.restart_with_length_continuation:
         # Boost the output budget per retry (shared ladder, see boosted_output_cap).
-        agent._ephemeral_max_output_tokens = boosted_output_cap(
-            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
-        )
+        if getattr(agent, "_claude_output_recovery_pending", None) is None:
+            agent._ephemeral_max_output_tokens = boosted_output_cap(
+                agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
+            )
         return _verdict("continue")
 
     # All retries may exhaust with `response` still None; break out cleanly.

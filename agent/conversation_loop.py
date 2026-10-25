@@ -1705,6 +1705,8 @@ def _run_conversation_turn(
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
     agent._ephemeral_reasoning_off = False
+    agent._claude_output_recovery_attempts = {}
+    agent._claude_output_recovery_pending = None
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
 

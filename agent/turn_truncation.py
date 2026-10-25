@@ -302,7 +302,7 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
-def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
+def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any, api_kwargs: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
     Never appends an interim assistant row with NO visible content — strict providers
@@ -314,9 +314,30 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     st.length_continue_retries += 1
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)
+    if isinstance(_interim_content, str) and not _interim_content.strip():
+        _interim_content = None
     if not _interim_content and not st.is_stub:
-        # Thinking-only truncation: continuing with thinking ON re-burns the budget.
-        agent._ephemeral_reasoning_off = True
+        from agent.claude_output_recovery import NO_VISIBLE_ANSWER, recover_no_visible_claude
+        recovery = recover_no_visible_claude(
+            agent, st.response, st.finish_reason,
+            agent._requested_output_cap_from_api_kwargs(api_kwargs),
+        ) if st.window_filled is None else None
+        if recovery is False:
+            partial = collapse_continuation_trail(
+                agent, messages, st.current_turn_user_idx, finish_reason="length",
+                parts=st.truncated_response_parts,
+            )
+            return st.end_turn(
+                f"{partial}\n\n{NO_VISIBLE_ANSWER}" if partial else NO_VISIBLE_ANSWER,
+                "Mandatory-thinking Claude recovery exhausted", failure=("truncated", False),
+            )
+        if recovery is True:
+            # Retry the unchanged transcript with changed request controls, not empty scaffolding.
+            _retry.restart_with_length_continuation = True
+            return st.done("break")
+        if recovery is None:
+            # Other models retain their one-shot reasoning-off recovery.
+            agent._ephemeral_reasoning_off = True
     if _interim_content:
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
@@ -372,9 +393,9 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
 
 def _model_output_limit(agent: Any) -> Optional[int]:
     """The model's real max output tokens when Hermes knows it, else None."""
-    if getattr(agent, "api_mode", None) != "anthropic_messages":
+    if getattr(agent, "api_mode", None) != "anthropic_messages" and "claude" not in (getattr(agent, "model", "") or "").lower():
         return None
-    # Local: only Anthropic-Messages turns need the adapter module.
+    # Native-compatible endpoints may also serve non-Claude families.
     from agent.anthropic_adapter import _get_anthropic_max_output
     return _get_anthropic_max_output(getattr(agent, "model", None) or "")
 
@@ -402,6 +423,13 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
     execute incomplete arguments."""
     agent = st.agent
+    from agent.claude_output_recovery import mandatory_claude
+    cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+    if not st.is_stub and mandatory_claude(agent) and cap and boosted_output_cap(agent, cap, 1) <= cap:
+        notice = "Claude tool call hit its output ceiling; not repeating the same budget. The action was not executed."
+        agent._emit_diagnostic_wait(notice)
+        close_interrupted_tool_sequence(st.messages, notice)
+        return st.end_turn(notice, failure=("truncated", False))
     if st.truncated_tool_call_retries < 4:
         st.truncated_tool_call_retries += 1
         n = st.truncated_tool_call_retries
@@ -528,7 +556,7 @@ def recover_from_truncation(
             return cf
         if _trunc_msg is not None:
             if not _trunc_has_tool_calls:
-                return _continue_text(st, _retry, _trunc_msg)
+                return _continue_text(st, _retry, _trunc_msg, api_kwargs)
             return _retry_truncated_tool_call(st, api_kwargs)
 
     if len(messages) > 1:
