@@ -50,7 +50,7 @@ class WorkerDelegationLedger:
         return call_off_event_loop(self.store._apply, 'delegation.dispatch', {
             key: record.get(key, '') for key in ('delegation_id', 'parent_session_id', 'session_key',
                 'origin_ui_session_id', 'origin_session_id', 'dispatched_at')} | {'task': {
-            key: record[key] for key in ('goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes')
+            key: record[key] for key in ('goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes', 'producer_turn')
             if key in record}})['value']
 
     def complete(self, event, result):

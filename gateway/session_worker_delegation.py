@@ -10,13 +10,13 @@ import time
 
 from hermes_state_runtime import RuntimeStoreError
 
-_TASK_KEYS = {'goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes'}
+_TASK_KEYS = {'goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes', 'producer_turn'}
 _ROUTE = {'session_key': 'origin_session', 'parent_session_id': 'parent_session_id',
           'origin_ui_session_id': 'origin_ui_session_id', 'origin_session_id': 'origin_session_id'}
 _EVENT_KEYS = _TASK_KEYS | set(_ROUTE) | {
     'type', 'delegation_id', 'status', 'completed_at', 'dispatched_at', 'summary', 'error',
     'api_calls', 'duration_seconds', 'total_duration_seconds', 'results', 'live_transcripts',
-    'group', 'exit_reason', 'stalled_after_quiet_seconds', 'stall_threshold_seconds',
+    'group', 'exit_reason', 'stalled_after_quiet_seconds', 'stall_threshold_seconds', 'producer_turn',
     'stall_phase', 'stall_grace_seconds'}
 
 
