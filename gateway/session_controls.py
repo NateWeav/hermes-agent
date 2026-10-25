@@ -833,6 +833,15 @@ class AuthorityConnection:
                     raise
             return asdict(await self.authority.receipt(self.actor, ref, admission_id))
         if receipt.status != 'queued':
+            # A finishing prompt may already be terminal when ACP Stop reaches the owner.
+            # Fence its producers without rewriting that truthful terminal outcome, and never
+            # substitute a newer generation belonging to a fresh user request.
+            self.authority.authorize(self.actor, ref, 'session:control')
+            async with self.authority.sessions[ref.session_id].claim_gate:
+                handle = self.authority._handle(ref)
+                if receipt.execution_generation is not None and handle.execution_generation == receipt.execution_generation:
+                    from gateway.session_automation_fence import fence_automation
+                    await fence_automation(self.authority, ref, receipt.execution_generation)
             return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))
         # Queued at this read, claimed by the drain before the cancel commit: Stop that exact claim (as
         # API and ACP do) instead of refusing while the withdrawn prompt runs.
@@ -848,9 +857,6 @@ class AuthorityConnection:
             self.actor, ref, params['admission_id'], params['execution_generation']))
 
     async def interrupt(self, ref, params):
-        from gateway.session_managed_worker import interrupt_managed
-        if interrupt_managed(self.authority, self.actor, ref, params.get('execution_generation')):
-            return asdict(self.authority._handle(ref))
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):

@@ -875,9 +875,24 @@ class SessionAuthority:
 
     async def interrupt(self, actor, ref, generation):
         self.authorize(actor, ref, 'session:control')
+        # Settlement may finish while Stop writes its fence; do not let a queued wake
+        # claim a successor generation before the exact Stop has been delivered.
+        async with self.sessions[ref.session_id].claim_gate:
+            return await self._interrupt_current(actor, ref, generation)
+
+    async def _interrupt_current(self, actor, ref, generation):
         handle = self._handle(ref)
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
+        from gateway.session_automation_fence import fence_automation
+        await fence_automation(self, ref, generation)
+        handle = self._handle(ref)
+        if handle.execution_generation != generation:
+            raise RuntimeStoreError('stale_generation')
+        if ref.session_id in getattr(self, '_managed_workers', {}):
+            from gateway.session_managed_worker import interrupt_managed
+            if interrupt_managed(self, actor, ref, generation):
+                return self._handle(ref)
         live, agent = self.sessions[ref.session_id], None
         if handle.execution_state == 'running':
             # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the

@@ -146,7 +146,8 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
-    metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
+    from gateway.session_automation_fence import producer_metadata
+    metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic", **producer_metadata(evt)}
     session_key = str(evt.get("session_key") or "").strip()
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
@@ -174,7 +175,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
-    _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
+    _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id",
+                                    "producer_turn")
     _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
 
     @dataclasses.dataclass
@@ -961,6 +963,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
+            if exc.reason == 'cancelled_automation':
+                logger.info('Dropped notification of %s: its producer predates explicit Stop', evt.get('session_id'))
+                if raise_not_accepted:
+                    raise
+                return None
             # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
             # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
             from gateway.wake import PERMANENT_REFUSAL_REASONS
@@ -1245,7 +1252,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         restore_completion_route(self, str(evt.get("session_key") or ""))
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
-        accepted = identity_claimed = refused = False
+        accepted = identity_claimed = refused = cancelled = False
         try:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
@@ -1276,6 +1283,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     self._mark_completions_delivered_locked((identity,))
             return True
         except WakeNotAccepted as exc:
+            if exc.reason == 'cancelled_automation':
+                cancelled = True
+                return None
             # A proven-permanent refusal spends its durable attempt, so the row converges to
             # ``dropped`` across restarts too (#141153); any other (restart wait, full FIFO, an owner
             # not yet proven) is refunded and never drops a completion the owner will take later.
@@ -1285,7 +1295,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if identity_claimed and not accepted:
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
-            operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
+            operation = "drop" if cancelled else "complete" if accepted else "defer" if refused or claim.defer else "release"
             if claim.claim_id:
                 self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
             for sibling, claim_id in sibling_claims:
@@ -1294,9 +1304,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if accepted and sibling_claims:
                 self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
-    @staticmethod
-    def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(str(evt.get(field) or "") for field in fields)
+    def _event_route_key(self, evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
+        from gateway.session_automation_fence import legacy_batch_boundary
+        # Keep normal fan-in, but never coalesce legacy work across a durable Stop boundary.
+        boundary = legacy_batch_boundary(self, evt) if not evt.get('producer_turn') else ''
+        return tuple(str(evt.get(field) or (boundary if field == 'producer_turn' else '')) for field in fields)
 
     @staticmethod
     def _format_coalesced_process_completions(entries: list[tuple[str, dict, asyncio.Future]]) -> str:
@@ -1726,6 +1738,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             "task_id": getattr(session, "task_id", "") or "",
             "message_id": str(watcher.get("message_id") or "").strip() or None,
             "started_at": getattr(session, "started_at", None),
+            "producer_turn": getattr(session, "producer_turn", None),
             "command": _redact_gateway_user_facing_secrets(_command),
             "exit_code": session.exit_code,
             "completion_reason": getattr(session, "completion_reason", "exited"),

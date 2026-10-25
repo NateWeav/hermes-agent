@@ -69,6 +69,7 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy),
+        'producer_owner': ref.session_id,
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
@@ -127,7 +128,7 @@ def worker_turn_scope(frame):
     if turn is None:
         yield
         return
-    flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1')} if isinstance(turn, dict) else None
+    flags = {k: v for k, v in turn.items() if k not in ('surface_v1', 'display_v1', 'producer_owner')} if isinstance(turn, dict) else None
     if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
             or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
         raise ValueError('invalid_managed_worker_bootstrap')
@@ -139,8 +140,10 @@ def worker_turn_scope(frame):
     if turn['yolo']:
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
+    from gateway.session_automation_context import producer_turn_scope
     with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
-            display_turn_scope(frame['scope']['execution_id'], display):
+            display_turn_scope(frame['scope']['execution_id'], display), \
+            producer_turn_scope(turn.get('producer_owner', frame['scope']['session_id']), frame['scope']['generation']):
         yield
 
 

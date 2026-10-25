@@ -324,7 +324,8 @@ def automation_display_metadata(metadata):
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'producer_started_at', 'producer_turn'})
 
 
 def admission_display(payload):
@@ -363,6 +364,8 @@ def snapshot_automation(authority, adapter, event, identity):
         raise RuntimeStoreError('invalid_params')
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
                     | _tick_metadata(event.metadata))
+    notification.update({key: event.metadata[key] for key in ('producer_started_at', 'producer_turn')
+                         if key in event.metadata})
     entry = _owner(runner, event, authority)
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
@@ -434,6 +437,8 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
+    descriptor.update({key: event.metadata[key] for key in ('producer_started_at', 'producer_turn')
+                       if key in event.metadata})
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
@@ -491,7 +496,10 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
     from functools import partial
     from gateway.session_runtime_workers import tracked_write
+    from gateway.session_automation_fence import automation_guard
     admitted, replaced = partial(authority._admitted, ref, event), []
+    guard = automation_guard(authority, ref.session_id, payload,
+                             replaces and _replace_queued(replaces, ref.session_id, replaced))
     if replaces is not None:
         def admitted(row, admitted=admitted):
             if replaced:  # the guard ran in the committed write; an exact replay runs no guard
@@ -500,7 +508,7 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
+        _authorize_write=authority._admission_gate(guard)),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 

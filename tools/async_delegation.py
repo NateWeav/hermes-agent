@@ -174,7 +174,7 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", "producer_turn", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -314,7 +314,8 @@ def recover_abandoned_delegations() -> int:
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
-                "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
+                "parent_session_id": parent_id, "producer_turn": task.get("producer_turn"),
+                "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
                 "status": "unknown", "summary": None, "error": error, **diagnostics,
@@ -828,8 +829,10 @@ def _dispatch_admitted(
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
     crash_result = _batch_crash if is_batch else _single_crash
+    from gateway.session_automation_context import producer_turn
     dispatched_at = time.time()
     record: dict[str, Any] = {
+        "producer_turn": producer_turn(),
         "delegation_id": delegation_id, "goal": goal, **({"goals": list(goals)} if is_batch else {}),
         "context": context, "toolsets": list(toolsets) if toolsets else None, "role": role, "model": model,
         "session_key": session_key, "origin_ui_session_id": origin_ui_session_id,
@@ -1017,6 +1020,7 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
+        "producer_turn": record.get("producer_turn"),
         # session_key routes back to the originating gateway session; "" => CLI.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
@@ -1064,6 +1068,7 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
     evt = {
         "type": "async_delegation", "task_failure_notice": True, "is_batch": True, "n_tasks": n_tasks,
         "delegation_id": delegation_id, "results": [entry],
+        "producer_turn": snapshot.get("producer_turn"),
         "session_key": snapshot.get("session_key", ""),
         "origin_ui_session_id": snapshot.get("origin_ui_session_id", ""),
         "origin_session_id": snapshot.get("origin_session_id", ""),
