@@ -975,7 +975,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             if task:
                 task.cancel()
             return
-        if kind in {"reasoning.delta", "todo.updated"}:
+        if kind in {"reasoning.delta", "todo.updated", "status.update"}:
             await self._project_side_update(kind, sid, editor_id, payload)
             return
         if kind in {"tool.start", "tool.complete"}:

@@ -148,7 +148,7 @@ def finish_text_response(
             messages=messages, api_messages=api_messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, api_call_count=api_call_count,
             turn_exit_reason=_turn_exit_reason,
-            preflight_compression_blocked=_preflight_compression_blocked,
+            preflight_compression_blocked=_preflight_compression_blocked, effective_task_id=effective_task_id,
         )
         final_response = _ev.final_response
         _turn_exit_reason = _ev.turn_exit_reason

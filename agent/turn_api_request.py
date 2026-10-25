@@ -175,6 +175,8 @@ def build_api_request(
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
     api_kwargs, api_messages, _moa_prepared_request = built.api_kwargs, built.api_messages, built._moa_prepared_request
+    from agent.request_diagnostics import log_request_controls
+    log_request_controls(agent, api_kwargs)
     _fire_pre_api_request_hook(
         agent, api_kwargs, api_messages, built._llm_middleware_trace, messages=messages,
         original_user_message=original_user_message, approx_tokens=approx_tokens,

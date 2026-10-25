@@ -80,6 +80,14 @@ class GatewayReplyMixin:
         so ``message.complete``'s final remainder is unchanged.
         ``todo.updated``: the owner's full todo snapshot (published for a LOCAL session's turn, which an ACP
         session is) as the native ``plan`` update Zed renders as its task panel (#134889 ACP-5)."""
+        if kind == "status.update":
+            # ACP has no status rail: a separate commentary bubble, never provider reasoning
+            # or reply-prefix accounting. This also reaches gateway-backed ACP sessions.
+            text = _text(payload)
+            if text.strip() and self._conn:
+                await self._conn.session_update(
+                    session_id=editor_id, update=acp.update_agent_message_text(text + "\n"))
+            return
         if kind == "reasoning.delta":
             text = _text(payload)
             update = self._chunk(sid, text, thought=True) if text else None

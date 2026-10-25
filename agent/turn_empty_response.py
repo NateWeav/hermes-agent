@@ -141,7 +141,7 @@ def recover_empty_response(
     agent: Any, assistant_message: Any, response: Any, finish_reason: str, *, final_response: Any,
     messages: list[dict[str, Any]], api_messages: Any, conversation_history: Any,
     active_system_prompt: Any, api_call_count: int, turn_exit_reason: Any,
-    preflight_compression_blocked: bool,
+    preflight_compression_blocked: bool, effective_task_id: Any = None,
 ) -> EmptyResponseVerdict:
     """Recover from a final response with no visible content (see module docstring for
     the ladder). Role alternation is preserved: the post-tool nudge appends the empty
@@ -196,6 +196,21 @@ def recover_empty_response(
             agent._response_was_previewed = True
             agent._reused_response_text = final_response
         return _verdict("break")
+
+    # Mandatory-thinking Claude shares one recovery budget with output-limit replies.
+    from agent.claude_output_recovery import NO_VISIBLE_ANSWER, recover_no_visible_claude
+    recovery = recover_no_visible_claude(agent, response, finish_reason)
+    if recovery is not None:
+        if recovery:
+            return _verdict("continue")
+        from agent.turn_truncation import partial_result
+        from agent.turn_failure_copy import stamp_failure
+        agent._drop_trailing_empty_response_scaffolding(messages)
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", stamp_failure(partial_result(
+            messages, api_call_count, NO_VISIBLE_ANSWER,
+        ), "empty_response", False))
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])

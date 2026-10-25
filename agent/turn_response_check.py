@@ -117,6 +117,7 @@ def check_api_response(
         )
 
     api_duration = time.time() - api_start_time
+    agent._last_model_request_duration = api_duration
 
     # Silent stop: the response box / tool messages that follow are more informative.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
