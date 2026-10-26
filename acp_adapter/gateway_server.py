@@ -658,10 +658,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             content = _content_blocks_to_openai_user_content(prompt)
             if not isinstance(content, str) or _slash_command(content) != 'discard':
                 raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
-        prepared = await self._prepare_submit(session_id, prompt)
+        meta = kwargs.get('field_meta') or kwargs.get('_meta') or {}
+        notification_ids = meta.get('hermes.notificationIds') or None
+        prepared = await self._prepare_submit(session_id, prompt, notification_ids)
         if prepared is None:
             return PromptResponse(stop_reason='cancelled')
-        retry_key, input_id, staged = prepared
+        retry_key, input_id, staged, notification_ids = prepared
         text, attachments = staged
         answered, text = await self._run_slash(held_id, session_id, text) if not attachments else (False, text)
         if answered:
@@ -669,6 +671,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # ... and every prepared control's (a slash keeps its own key: apply retires the rest).
         self._mutations.retire(session_id)
         submit = {'text': text}
+        if notification_ids:
+            submit['notification_ids'] = notification_ids
         if attachments:
             submit['attachments'] = attachments
         self._submitting.add(session_id)
@@ -682,7 +686,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             if not isinstance(exc, GatewayRPCError):
                 # Transport loss, timeout or cancel before the ack: the owner may hold this admission.
                 # Keep its identity for the editor's retry of the same prompt (latest 64 sessions).
-                self._unacked[session_id] = (retry_key, input_id, staged)
+                self._unacked[session_id] = (retry_key, input_id, staged, notification_ids)
                 while len(self._unacked) > 64:
                     self._unacked.pop(next(iter(self._unacked)))
             self._pending_cancels.discard(session_id)
@@ -770,8 +774,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
         return True, None
 
-    async def _prepare_submit(self, session_id, prompt):
-        """``(retry_key, input_id, (text, attachments))`` for one ACP prompt, or None when the editor's Stop
+    async def _prepare_submit(self, session_id, prompt, notification_ids=None):
+        """``(retry_key, input_id, (text, attachments), notification_ids)`` for one ACP prompt, or None when the editor's Stop
         arrived while it was staged."""
         from acp_adapter.content import _content_blocks_to_openai_user_content
         from acp_adapter.gateway_media import stage_user_content, submit_fingerprint
@@ -780,7 +784,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.
         retained = self._unacked.pop(session_id, None)
-        if retained is not None and retained[0] == retry_key:
+        if (retained is not None and retained[0] == retry_key
+                and (notification_ids is None or notification_ids == retained[3])):
             # The retry resends what the owner may already hold: the staged content and input_id are
             # reused, never prepared (a remote image fetched) a second time.
             return retained
@@ -794,7 +799,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if session_id in self._pending_cancels:
             self._pending_cancels.discard(session_id)
             return None
-        return retry_key, uuid.uuid4().hex, staged
+        return retry_key, uuid.uuid4().hex, staged, notification_ids
 
     async def _after_ack(self, session_id, admission_id, link, resumes):
         """A gap re-attach whose resume left after this submit covers it. The pump owns recovery: it

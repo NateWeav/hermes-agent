@@ -703,6 +703,10 @@ class AuthorityConnection:
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
+        if params.get('notification_ids'):
+            from gateway.session_acp_notifications import submit_receipts
+            return asdict(await submit_receipts(self, ref, params))
+        params = {key: value for key, value in params.items() if key != 'notification_ids'}
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)

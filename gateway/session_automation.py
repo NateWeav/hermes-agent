@@ -73,6 +73,10 @@ async def deliver_heartbeat(runner, event):
 def _replaced_tick_claimed(runner, prepared):
     from gateway.session_authorities import active_authority
     from hermes_state_runtime import get_session_admission
+    if prepared.get('_replaces_offer'):
+        from gateway.session_acp_notifications import tick_claimed
+        authority = active_authority(runner)
+        return authority is not None and tick_claimed(authority, prepared['_replaces_offer'])
     replaced = prepared.get('_replaces')
     authority = active_authority(runner) if replaced else None
     row = authority and get_session_admission(authority.db, admission_id=replaced)
@@ -84,18 +88,24 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
     the heartbeat lock together; a tick already holds it (``deliver_heartbeat``)."""
     identity = producer_identity(runner, evt)
     from gateway.session_acp_notifications import offer
-    if await offer(authority, adapter, event, identity, evt):
+    if evt.get('type') == 'heartbeat':
+        event.metadata['heartbeat_tick'] = {'output': str(evt.get('output') or ''),
+                                            'omitted': int(evt.get('omitted') or 0)}
+        if evt.get('_automation_identities'):
+            event.metadata['automation_identities'] = evt['_automation_identities']
+    if evt.get('type') != 'completion' and await offer(authority, adapter, event, identity, evt):
         return None  # durable client-owned offer, not an autonomous admission
     if evt.get('type') == 'heartbeat':
         # The tick's raw output rides its stored admission: a later tick folds from the ledger.
-        event.metadata['heartbeat_tick'] = {'output': str(evt.get('output') or ''),
-                                            'omitted': int(evt.get('omitted') or 0)}
         if evt.get('_replaces'):
             return await authority.admit_automation(adapter, event, identity, replaces=evt['_replaces'])
     if evt.get('type') != 'completion':
         return await authority.admit_automation(adapter, event, identity)
     async with _heartbeat_lock(runner):
-        receipt = await authority.admit_automation(adapter, event, identity)
+        if await offer(authority, adapter, event, identity, evt):
+            receipt = None
+        else:
+            receipt = await authority.admit_automation(adapter, event, identity)
         await withdraw_process_ticks(runner, evt)
         return receipt
 
@@ -122,6 +132,10 @@ async def prepare_heartbeat(runner, event):
         logger.debug("Dropped heartbeat %s of process %s: its completion is already admitted",
                      event.get('event_id'), process)
         return None
+    from gateway.session_acp_notifications import prepare_tick
+    offered, offered_event = await asyncio.to_thread(prepare_tick, authority, owner, process, event)
+    if offered:
+        return offered_event
     from hermes_state_runtime import find_session_admission
     if await asyncio.to_thread(find_session_admission, authority.db, principal_id='automation:' + entry.session_key,
                                session_id=owner, request_id=producer_identity(runner, event)):
@@ -181,6 +195,8 @@ async def withdraw_process_ticks(runner, event):
             if identity[0] == 'completion' and len(identity) > 1}
         pending = await asyncio.to_thread(
             list_session_admissions, authority.db, session_id=_route_owner(authority, entry))
+        from gateway.session_acp_notifications import withdraw_ticks
+        await withdraw_ticks(authority, _route_owner(authority, entry), finished)
         for row in pending:
             if any(_queued_tick(row, process, entry.session_key) for process in finished):
                 await _withdraw(authority, row)
@@ -208,6 +224,9 @@ def _process_completed(runner, authority, owner, event):
     if completion is None:
         return False
     identity = json.dumps(completion, separators=(',', ':'))
+    from gateway.session_acp_notifications import contains_identity
+    if contains_identity(authority, owner, identity):
+        return True
     with authority.db._read_ctx() as conn:
         if conn.execute('SELECT 1 FROM session_admissions WHERE target_session_id=? AND request_id=?',
                         (owner, identity)).fetchone():

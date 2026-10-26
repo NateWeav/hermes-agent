@@ -11106,6 +11106,21 @@
             "title": "Queued",
             "type": "boolean"
           },
+          "notification_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Notification Ids"
+          },
           "attachments": {
             "anyOf": [
               {

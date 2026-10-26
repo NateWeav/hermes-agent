@@ -29,7 +29,7 @@ async def _drain(agent, sid, gateway):
             try:
                 # SDK adds the leading underscore: wire method is _hermes/notification.
                 await agent._conn.ext_notification('hermes/notification', {
-                    'sessionId': agent._editor_id(sid), **notice})
+                    'sessionId': agent._editor_id(sid), **notice, 'notificationIds': [identity]})
             except BaseException:
                 await gateway.rpc('session.acp_notification', session_id=sid, action='release', identity=identity)
                 raise

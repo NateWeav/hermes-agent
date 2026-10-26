@@ -209,6 +209,7 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     submission_id: str | None = None
     input_id: str | None = None
     queued: bool = False
+    notification_ids: list[str] | None = None
     attachments: list[CanonicalAttachment] | None = None
     finite: bool = False
     unattended: bool = False

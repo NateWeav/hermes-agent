@@ -28,7 +28,7 @@ async def offer(authority, adapter, event, identity, evt):
 
     value = {'payload': payload, 'kind': evt.get('type', 'completion'),
              'title': event.metadata.get('display_text') or event.text[:200],
-             'text': event.text, 'delivered': False, 'claim': None}
+             'text': event.text, 'delivered': False, 'claim': None, 'consumed': False}
 
     def write():
         def commit(conn):
@@ -40,6 +40,14 @@ async def offer(authority, adapter, event, identity, evt):
                 old = old.get('local_automation_v1') or old.get('native_text_v1', {}).get('automation', {})
                 if identities.intersection(old.get('identities', [old.get('identity')])):
                     return
+            replaced = evt.get('_replaces_offer')
+            if replaced:
+                old = conn.execute('SELECT value FROM state_meta WHERE key=?', (replaced,)).fetchone()
+                prior = json.loads(old[0]) if old else None
+                if prior is None or prior.get('claim') or prior.get('delivered'):
+                    raise RuntimeStoreError('stale_generation')
+                prior.update(delivered=True, withdrawn=True)
+                conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(prior), replaced))
             conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
                          (_key(sid, identity), json.dumps(value)))
         return authority.db._execute_write(commit)
@@ -52,7 +60,11 @@ async def offer(authority, adapter, event, identity, evt):
 
 
 async def notification(connection, ref, params):
-    """Claim/ack one offer. A disconnected viewer's unacknowledged claim is reclaimable."""
+    """Claim one offer until its client-owned prompt consumes the durable receipt.
+
+    ``ack`` only confirms socket delivery, not consumption. Disconnected claims
+    can therefore be reclaimed without losing a result before its prompt arrives.
+    """
     authority, actor = connection.authority, connection.actor
     authority.authorize(actor, ref, 'session:submit')
     from gateway.session_policy import policy_for_source
@@ -81,8 +93,10 @@ async def notification(connection, ref, params):
                 if action != 'take':
                     if claim != actor.transport_id:
                         continue
-                    value['delivered'] = action == 'ack'
-                    value['claim'] = None
+                    # A socket send is not a client receipt. Keep the offer pending
+                    # until prompt.submit consumes it; a detached viewer may redeliver.
+                    if action == 'release':
+                        value['claim'] = None
                 else:
                     if claim and claim in authority.events:
                         continue
@@ -102,6 +116,107 @@ async def notification(connection, ref, params):
             return {'notification': None}
         return authority.db._execute_write(commit)
     return await tracked_write(authority, write, ordered=True)
+
+
+def _rows(conn, sid):
+    for key, raw in conn.execute('SELECT key,value FROM state_meta WHERE key LIKE ?', (_PREFIX + '%',)):
+        owner, identity = json.loads(key[len(_PREFIX):])
+        if owner == sid:
+            yield key, identity, json.loads(raw)
+
+
+def contains_identity(authority, sid, identity):
+    with authority.db._read_ctx() as conn:
+        return any(identity in (value['payload']['local_automation_v1'].get('identities') or [item_id])
+                   for _, item_id, value in _rows(conn, sid))
+
+
+def prepare_tick(authority, sid, process, event):
+    """Fold only an unclaimed offer: a claimed one may already be on its editor's wire."""
+    from gateway.session_automation import producer_identity
+    from tools.process_registry_notifications import join_heartbeat_outputs
+    identity = producer_identity(authority.runner, event)
+    with authority.db._read_ctx() as conn:
+        rows = list(_rows(conn, sid))
+    if any(identity in (value['payload']['local_automation_v1'].get('identities') or [item_id])
+           for _, item_id, value in rows):
+        return True, None
+    for key, item_id, value in rows:
+        parsed = json.loads(item_id)
+        descriptor = value['payload']['local_automation_v1']
+        if (len(parsed) == 3 and parsed[:2] == ['heartbeat', process]
+                and not value.get('delivered') and not value.get('claim')):
+            earlier = descriptor.get('tick')
+            if isinstance(earlier, dict):
+                identities = sorted(set([identity, *(descriptor.get('identities') or [item_id])]))
+                return True, {**event, **join_heartbeat_outputs(earlier, event),
+                              '_replaces_offer': key, '_automation_identities': identities}
+    return False, event
+
+
+def tick_claimed(authority, key):
+    with authority.db._read_ctx() as conn:
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    return saved is None or bool(json.loads(saved[0]).get('claim') or json.loads(saved[0]).get('delivered'))
+
+
+async def withdraw_ticks(authority, sid, processes):
+    def write():
+        def commit(conn):
+            for key, identity, value in _rows(conn, sid):
+                parsed = json.loads(identity)
+                if (len(parsed) == 3 and parsed[0] == 'heartbeat' and parsed[1] in processes
+                        and not value.get('consumed')):
+                    value['delivered'] = True
+                    value['withdrawn'] = True
+                    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(value), key))
+        return authority.db._execute_write(commit)
+    await tracked_write(authority, write, ordered=True)
+
+
+async def submit_receipts(connection, ref, params):
+    """Consume an editor's result receipt in the SAME transaction as its one admission.
+
+    Keep the stored automation provenance so Stop also cancels a continuation queued
+    behind human input. Never trust the editor's text or a new random prompt identity.
+    """
+    from hermes_state_runtime import admit_session_input
+    ids = params.get('notification_ids')
+    if (not isinstance(ids, list) or len(ids) != 1 or not isinstance(ids[0], str)
+            or params.get('attachments')):
+        raise RuntimeStoreError('invalid_params')
+    authority, sid, identity = connection.authority, ref.session_id, ids[0]
+    authority.authorize(connection.actor, ref, 'session:submit')
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, authority.sessions[sid].source)
+    if policy is None or policy.source != 'acp':
+        raise RuntimeStoreError('permission_denied')
+    if sid not in connection.subscriptions:
+        raise RuntimeStoreError('permission_denied')
+    with authority.db._read_ctx() as conn:
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (_key(sid, identity),)).fetchone()
+    if saved is None:
+        raise RuntimeStoreError('not_found')
+    value = json.loads(saved[0])
+    if value.get('withdrawn'):
+        raise RuntimeStoreError('cancelled_automation')
+    payload = value['payload']
+    route = payload['local_automation_v1']['route']
+
+    def consume(conn):
+        automation_guard(authority, sid, payload)(conn)
+        current = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                         (_key(sid, identity),)).fetchone()[0])
+        if current.get('withdrawn'):
+            raise RuntimeStoreError('cancelled_automation')
+        current.update(consumed=True, delivered=True, claim=None)
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(current), _key(sid, identity)))
+
+    return await tracked_write(authority, partial(admit_session_input, authority.db,
+        epoch=authority.epoch, principal_id='automation:' + route, session_id=sid,
+        request_id=identity, payload=payload, _authorize_write=authority._admission_gate(consume)),
+        then=partial(authority._admitted, ref, None), ordered=True,
+        after=partial(authority._schedule_admitted, ref))
 
 
 def handlers(connection):
